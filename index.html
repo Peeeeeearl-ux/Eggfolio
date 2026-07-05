@@ -259,6 +259,14 @@
   }
   .div-input::-webkit-outer-spin-button,.div-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
   .div-input[type=number]{appearance:textfield;-moz-appearance:textfield;}
+
+  .month-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
+  .month-chip{
+    padding:9px 0;text-align:center;border-radius:8px;border:1px solid var(--border);
+    background:var(--input-bg);color:var(--text-secondary);font-size:12.5px;font-family:var(--sans);
+    cursor:pointer;
+  }
+  .month-chip.selected{background:var(--accent);color:var(--accent-contrast);border-color:var(--accent);font-weight:700;}
 </style>
 </head>
 <body>
@@ -499,6 +507,20 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="divMonthsModalOverlay">
+  <div class="modal-card">
+    <h3>배당 지급월 설정</h3>
+    <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;line-height:1.5;">배당을 받는 달을 선택하세요. AI 추정은 참고용이니 실제 지급 내역과 비교해 조정해주세요.</p>
+    <div class="month-grid" id="monthGrid"></div>
+    <button class="pill-btn" id="divMonthsAiBtn" style="margin-top:12px;width:100%;">AI로 배당주기 확인</button>
+    <div id="divMonthsAiNote" style="font-size:11px;color:var(--text-secondary);margin-top:8px;line-height:1.5;"></div>
+    <div class="modal-actions" style="margin-top:14px;">
+      <button class="modal-btn cancel" id="divMonthsModalCancel">취소</button>
+      <button class="modal-btn confirm" id="divMonthsModalSave">저장</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="goalModalOverlay">
   <div class="modal-card">
     <h3 id="goalModalTitle">목표 금액 설정</h3>
@@ -673,6 +695,50 @@ async function parseTransactionWithAI(text){
   const data = await res.json();
   const toolBlock = (data.content||[]).find(b=>b.type==='tool_use');
   if(!toolBlock) throw new Error('AI가 정보를 추출하지 못했어요');
+  return toolBlock.input;
+}
+
+async function lookupDividendCycle(name){
+  const apiKey = getClaudeKey();
+  if(!apiKey) throw new Error('NO_KEY');
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      tools: [{
+        name: 'dividend_schedule',
+        description: '주식 종목의 일반적인 배당 지급 주기(월)을 반환한다',
+        input_schema: {
+          type: 'object',
+          properties: {
+            months: { type: 'array', items: { type: 'number' }, description: '배당을 지급하는 월(1~12) 목록. 확실하지 않으면 빈 배열' },
+            frequency: { type: 'string', description: '예: 분기배당, 반기배당, 연배당, 월배당, 무배당/알수없음' },
+            confidence: { type: 'string', enum: ['high','medium','low'], description: '이 추정의 확신도' }
+          },
+          required: ['months','frequency','confidence']
+        }
+      }],
+      tool_choice: { type: 'tool', name: 'dividend_schedule' },
+      messages: [{
+        role: 'user',
+        content: `"${name}" 이라는 주식 종목의 일반적인 배당 지급 월과 주기를 알려줘. 확실히 아는 정보가 아니면 정직하게 confidence를 low로 표시하고 months는 빈 배열로 해줘.`
+      }]
+    })
+  });
+  if(!res.ok){
+    const body = await res.json().catch(()=>({}));
+    throw new Error(body?.error?.message || `요청 실패 (${res.status})`);
+  }
+  const data = await res.json();
+  const toolBlock = (data.content||[]).find(b=>b.type==='tool_use');
+  if(!toolBlock) throw new Error('AI가 정보를 추정하지 못했어요');
   return toolBlock.input;
 }
 function setSyncStatus(text){
@@ -877,6 +943,35 @@ function totalAssetValue(){
   return state.holdings.reduce((s,h)=>s+h.shares*h.currentPrice,0);
 }
 
+function monthlyDividendBreakdown(){
+  const monthly = Array(12).fill(0);
+  state.holdings.forEach(h=>{
+    const months = h.divMonths || [];
+    if(!months.length || !h.divAnnual) return;
+    const perPayment = h.shares * h.divAnnual / months.length;
+    months.forEach(m=>{ if(m>=1 && m<=12) monthly[m-1] += perPayment; });
+  });
+  return monthly;
+}
+
+function renderMonthlyDividendChart(){
+  const monthly = monthlyDividendBreakdown();
+  const max = Math.max(...monthly, 1);
+  const accent = cssVar('--accent') || '#1DB954';
+  const mutedColor = cssVar('--text-secondary') || '#B3B3B3';
+  const w = 320, h = 130, barAreaH = 96, barW = 18, gap = (w - barW*12) / 13;
+  let svg = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;display:block;">`;
+  monthly.forEach((val, i)=>{
+    const barH = (val/max) * barAreaH;
+    const x = gap + i*(barW+gap);
+    const y = barAreaH - barH;
+    svg += `<rect x="${x}" y="${y}" width="${barW}" height="${Math.max(barH,1)}" rx="3" fill="${accent}" opacity="${val>0?1:0.25}"><title>${i+1}월 ₩${fmt(val)}</title></rect>`;
+    svg += `<text x="${x+barW/2}" y="${barAreaH+16}" text-anchor="middle" font-size="9" fill="${mutedColor}" font-family="-apple-system,sans-serif">${i+1}</text>`;
+  });
+  svg += `</svg>`;
+  return svg;
+}
+
 function renderDividendTab(){
   const container = document.getElementById('dividendContent');
   const totalValue = totalAssetValue();
@@ -907,6 +1002,11 @@ function renderDividendTab(){
       <div class="cell"><div class="label">평균 배당수익률</div><div class="value">${avgYield.toFixed(2)}%</div></div>
     </div>
     <div class="card">
+      <p class="card-title">월별 예상 배당</p>
+      ${renderMonthlyDividendChart()}
+      <p style="font-size:11px;color:var(--text-secondary);margin-top:4px;">종목별 "배당주기"를 설정해야 해당 월에 반영돼요.</p>
+    </div>
+    <div class="card">
       <p class="card-title">종목별 배당</p>
       ${rows.map(r=>`
         <div class="div-item">
@@ -921,6 +1021,9 @@ function renderDividendTab(){
             </div>
             <div class="chip"><span class="clabel">연간 배당금액</span><span class="cval">₩${fmt(r.annual)}</span></div>
           </div>
+          <button class="pill-btn div-months-btn" data-id="${holdingId(r.h.account,r.h.ticker)}" style="margin-top:10px;">
+            배당주기 ${r.h.divMonths && r.h.divMonths.length ? '· '+r.h.divMonths.join(',')+'월' : '설정 안 됨'}
+          </button>
         </div>
       `).join('')}
     </div>
@@ -933,6 +1036,12 @@ function renderDividendTab(){
       if(!h || isNaN(val) || val<0){ showToast('배당금을 확인해주세요'); render(); return; }
       h.divAnnual = val;
       render();
+    });
+  });
+  container.querySelectorAll('.div-months-btn').forEach(btn=>{
+    btn.addEventListener('click', e=>{
+      const h = state.holdings.find(x=>holdingId(x.account,x.ticker)===e.currentTarget.dataset.id);
+      if(h) openDivMonthsModal(h);
     });
   });
 }
@@ -1033,6 +1142,69 @@ function renderGoalArchive(){
     </div>
   `;
 }
+
+let divMonthsEditingId = null;
+let divMonthsSelected = [];
+function renderMonthGrid(){
+  const grid = document.getElementById('monthGrid');
+  grid.innerHTML = Array.from({length:12},(_,i)=>i+1).map(m=>
+    `<button type="button" class="month-chip ${divMonthsSelected.includes(m)?'selected':''}" data-month="${m}">${m}월</button>`
+  ).join('');
+  grid.querySelectorAll('.month-chip').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const m = Number(btn.dataset.month);
+      if(divMonthsSelected.includes(m)) divMonthsSelected = divMonthsSelected.filter(x=>x!==m);
+      else divMonthsSelected.push(m);
+      renderMonthGrid();
+    });
+  });
+}
+function openDivMonthsModal(h){
+  divMonthsEditingId = holdingId(h.account, h.ticker);
+  divMonthsSelected = (h.divMonths||[]).slice();
+  document.getElementById('divMonthsAiNote').textContent = '';
+  renderMonthGrid();
+  document.getElementById('divMonthsModalOverlay').classList.add('show');
+}
+function closeDivMonthsModal(){
+  document.getElementById('divMonthsModalOverlay').classList.remove('show');
+  divMonthsEditingId = null;
+}
+document.getElementById('divMonthsModalCancel').addEventListener('click', closeDivMonthsModal);
+document.getElementById('divMonthsModalOverlay').addEventListener('click', e=>{
+  if(e.target.id==='divMonthsModalOverlay') closeDivMonthsModal();
+});
+document.getElementById('divMonthsModalSave').addEventListener('click', ()=>{
+  const h = state.holdings.find(x=>holdingId(x.account,x.ticker)===divMonthsEditingId);
+  if(h){
+    h.divMonths = divMonthsSelected.slice().sort((a,b)=>a-b);
+    showToast('배당 지급월을 저장했어요');
+    render();
+  }
+  closeDivMonthsModal();
+});
+document.getElementById('divMonthsAiBtn').addEventListener('click', async ()=>{
+  const h = state.holdings.find(x=>holdingId(x.account,x.ticker)===divMonthsEditingId);
+  if(!h) return;
+  if(!getClaudeKey()){ showToast('설정 탭에서 Claude API 키를 먼저 등록해주세요'); return; }
+  const btn = document.getElementById('divMonthsAiBtn');
+  const prevLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '확인 중...';
+  try{
+    const result = await lookupDividendCycle(h.name);
+    divMonthsSelected = (result.months||[]).filter(m=>m>=1 && m<=12);
+    renderMonthGrid();
+    const confMap = { high:'높음', medium:'보통', low:'낮음' };
+    document.getElementById('divMonthsAiNote').textContent =
+      `AI 추정: ${result.frequency} (확신도: ${confMap[result.confidence]||result.confidence}) — 실제 지급 내역과 비교해서 확인 후 저장해주세요.`;
+  }catch(e){
+    showToast(e.message === 'NO_KEY' ? 'API 키를 확인해주세요' : ('AI 조회 실패: ' + e.message));
+  }finally{
+    btn.disabled = false;
+    btn.textContent = prevLabel;
+  }
+});
 
 let goalModalMode = 'set';
 function openGoalModal(prefill, isNext){
