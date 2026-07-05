@@ -253,7 +253,7 @@
   .goal-archive-item:last-child{border-bottom:none;}
   .goal-archive-item .gval{color:var(--text-secondary);font-family:var(--sans);}
 
-  .div-summary{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px;}
+  .div-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;}
   .div-summary .cell{background:var(--surface);border-radius:14px;padding:14px 12px;min-width:0;}
   .div-summary .label{font-size:10.5px;color:var(--text-secondary);letter-spacing:0.3px;margin-bottom:6px;}
   .div-summary .value{font-family:var(--mono);font-size:17px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -569,6 +569,10 @@ const cssVar = name => getComputedStyle(document.documentElement).getPropertyVal
 
 // 시세 코드로 통화를 추정한다. 코드가 없으면 국내 종목(원화)으로 간주하고,
 // ":KRX" 등 국내 거래소 표기가 없는 코드(예: AAPL)는 달러로 간주한다.
+const DIVIDEND_TAX_RATE = { KRW: 0.154, USD: 0.15 }; // 국내주식 배당소득세(15.4%) / 미국주식 배당소득세(한미조세조약 15%) 원천징수 가정
+function dividendTaxRate(currency){ return DIVIDEND_TAX_RATE[currency] ?? DIVIDEND_TAX_RATE.KRW; }
+function afterTaxAmount(amount, currency){ return amount * (1 - dividendTaxRate(currency)); }
+
 function inferCurrency(symbol){
   if(!symbol) return 'KRW';
   const s = symbol.trim().toUpperCase();
@@ -1115,16 +1119,19 @@ function renderDividendTab(){
     const avgPerMonth = divAnnualShare / 12; // 월 평균 배당금(1주)
     const yieldPct = h.currentPrice>0 ? divAnnualShare/h.currentPrice*100 : 0;
     const annualConverted = convertToDisplay(annual, currency) || 0;
-    return { h, currency, annual, avgPerPayment, avgPerMonth, divAnnualShare, yieldPct, annualConverted };
+    const annualAfterTax = afterTaxAmount(annual, currency); // 세후 예상 연 배당금(원래 통화, 원천징수 추정 적용)
+    return { h, currency, annual, annualAfterTax, avgPerPayment, avgPerMonth, divAnnualShare, yieldPct, annualConverted };
   }).sort((a,b)=>b.annualConverted-a.annualConverted);
 
   const { total: totalAnnual, unconverted: divUnconverted } = sumInDisplayCurrency(rows.map(r=>({amount:r.annual, currency:r.currency})));
+  const { total: totalAnnualAfterTax } = sumInDisplayCurrency(rows.map(r=>({amount:r.annualAfterTax, currency:r.currency})));
   const avgYield = totalValue>0 ? totalAnnual/totalValue*100 : 0;
 
   if(!rows.length){
     container.innerHTML = `
       <div class="div-summary">
         <div class="cell"><div class="label">올해 예상 배당금</div><div class="value">-</div></div>
+        <div class="cell"><div class="label">세후 실수령액</div><div class="value">-</div></div>
         <div class="cell"><div class="label">평균 배당수익률</div><div class="value">-</div></div>
       </div>
       <div class="empty">아직 등록된 종목이 없어요. 거래 탭에서 추가해보세요.</div>
@@ -1135,8 +1142,10 @@ function renderDividendTab(){
   container.innerHTML = `
     <div class="div-summary">
       <div class="cell"><div class="label">올해 예상 배당금</div><div class="value">${fmtMoney(totalAnnual, display)}</div></div>
+      <div class="cell"><div class="label">세후 실수령액</div><div class="value">${fmtMoney(totalAnnualAfterTax, display)}</div></div>
       <div class="cell"><div class="label">평균 배당수익률</div><div class="value">${avgYield.toFixed(2)}%</div></div>
     </div>
+    <div style="font-size:11px;color:var(--text-secondary);margin:-10px 0 14px;">세후 금액은 국내주식 15.4%, 해외주식 15% 원천징수 기준 추정치예요.</div>
     ${divUnconverted ? `<div style="font-size:11px;color:var(--loss);margin:-10px 0 14px;">환율 정보가 없어 일부 해외 종목이 합계에서 제외됐어요 · "시세 갱신"을 눌러 환율을 가져와주세요</div>` : ''}
     <div class="card">
       <p class="card-title">월별 예상 배당</p>
@@ -1160,6 +1169,7 @@ function renderDividendTab(){
             <div class="chip"><span class="clabel">월 평균 배당금(1주)</span><span class="cval">${fmtMoney(r.avgPerMonth, r.currency)}</span></div>
             <div class="chip"><span class="clabel">주당 연배당</span><span class="cval">${fmtMoney(r.divAnnualShare, r.currency)}</span></div>
             <div class="chip"><span class="clabel">예상 연 배당금</span><span class="cval">${fmtMoney(r.annual, r.currency)}</span></div>
+            <div class="chip"><span class="clabel">세후 실수령액(연)</span><span class="cval">${fmtMoney(r.annualAfterTax, r.currency)}</span></div>
           </div>
           <button class="pill-btn div-months-btn" data-id="${holdingId(r.h.account,r.h.ticker)}" style="margin-top:10px;">
             배당주기 ${r.h.divMonths && r.h.divMonths.length ? '· '+r.h.divMonths.join(',')+'월' : '설정 안 됨'}
