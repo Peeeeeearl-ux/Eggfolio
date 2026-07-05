@@ -63,7 +63,7 @@
   .tab-pane.active{display:block;animation:fadein .15s ease;}
   @keyframes fadein{from{opacity:0;} to{opacity:1;}}
 
-  .summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;}
+  .summary{display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:10px;margin-bottom:18px;}
   /* min-width:0 이 없으면 긴 monospace 숫자 때문에 셀이 줄지 못해 그리드가 화면 밖으로 밀림 */
   .summary .cell{background:var(--surface);border-radius:14px;padding:14px 12px;min-width:0;}
   .summary .label{font-size:10.5px;color:var(--text-secondary);letter-spacing:0.3px;margin-bottom:6px;}
@@ -123,7 +123,10 @@
   .chip .cval.up{color:var(--gain);}
   .chip .cval.down{color:var(--loss);}
   .ticker-cell{font-family:var(--sans);font-size:14px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .weight-badge{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--text-secondary);margin-left:6px;}
+  .weight-badge{
+    font-family:var(--mono);font-size:11px;font-weight:600;color:var(--text-secondary);
+    margin-left:6px;background:var(--input-bg);padding:2px 7px;border-radius:10px;
+  }
   .holding-actions{display:flex;gap:6px;flex-shrink:0;}
   .icon-btn{
     display:flex;align-items:center;justify-content:center;width:28px;height:28px;
@@ -516,7 +519,7 @@ function switchTab(tab){
   document.getElementById('topbarTitle').textContent = TAB_TITLES[tab] || '에그폴리오';
   window.scrollTo(0,0);
   // 홈 탭이 숨겨져 있는 동안(render()가 다른 탭에서 호출된 경우) clientWidth가 0이라
-  // fitValueText의 폭 측정이 무의미했으므로, 실제로 보여질 때 다시 맞춘다.
+  // computeFitSize의 폭 측정이 무의미했으므로, 실제로 보여질 때 다시 맞춘다.
   if(tab==='home') refitSummaryValues();
 }
 document.querySelectorAll('.nav-btn').forEach(btn=>{
@@ -788,17 +791,24 @@ function periodReturn(h, period){
   return (h.currentPrice - basePrice)/basePrice*100;
 }
 
-function fitValueText(el){
+function computeFitSize(el){
   el.style.fontSize = '17px';
-  if(el.clientWidth === 0) return; // 탭이 숨겨진 상태라 측정 불가 -> switchTab에서 재시도
+  if(el.clientWidth === 0) return null; // 탭이 숨겨진 상태라 측정 불가 -> switchTab에서 재시도
   let size = 17;
   while(el.scrollWidth > el.clientWidth && size > 9){
     size -= 0.5;
     el.style.fontSize = size + 'px';
   }
+  return size;
 }
 function refitSummaryValues(){
-  ['sumValue','sumReturn','sumDiv'].forEach(id=>fitValueText(document.getElementById(id)));
+  const els = ['sumValue','sumReturn','sumDiv'].map(id=>document.getElementById(id));
+  const sizes = els.map(computeFitSize);
+  if(sizes.some(s=>s===null)) return;
+  // 카드마다 텍스트 길이가 달라 개별로 맞추면 크기가 제각각이라, 셋 중 가장 작은
+  // 크기로 통일해 요약 카드 전체가 한눈에 동일한 비중으로 보이게 한다.
+  const minSize = Math.min(...sizes);
+  els.forEach(el=>{ el.style.fontSize = minSize + 'px'; });
 }
 
 function render(){
@@ -814,14 +824,12 @@ function render(){
 
   const sumValueEl = document.getElementById('sumValue');
   sumValueEl.textContent = totalValue>0 ? '₩'+fmt(totalValue) : '-';
-  fitValueText(sumValueEl);
   const rEl = document.getElementById('sumReturn');
   rEl.textContent = visible.length ? fmtPct(totalReturn) : '-';
   rEl.className = 'value ' + (totalReturn>=0?'up':'down');
-  fitValueText(rEl);
   const sumDivEl = document.getElementById('sumDiv');
   sumDivEl.textContent = visible.length ? divYield.toFixed(2)+'%' : '-';
-  fitValueText(sumDivEl);
+  refitSummaryValues();
 
   const colorMap = renderDial(visible, totalValue);
   renderDialTable(visible, totalValue, colorMap);
@@ -1124,6 +1132,7 @@ function renderTable(visible, totalValue, filter){
     const value = h.shares*h.currentPrice;
     const weight = totalValue>0 ? value/totalValue*100 : 0;
     const ret = periodReturn(h, period);
+    const pl = (h.currentPrice - h.avgCost) * h.shares;
     const id = holdingId(h.account,h.ticker);
     const item = document.createElement('div');
     item.className = 'holding-item';
@@ -1144,6 +1153,7 @@ function renderTable(visible, totalValue, filter){
         <div class="chip"><span class="clabel">현재가</span><span class="cval">${fmt(h.currentPrice)}</span></div>
         <div class="chip"><span class="clabel">수량</span><span class="cval">${fmt(h.shares)}</span></div>
         <div class="chip"><span class="clabel">평가금액</span><span class="cval">₩${fmt(value)}</span></div>
+        <div class="chip"><span class="clabel">평가손익</span><span class="cval ${pl>=0?'up':'down'}">${pl>=0?'+':'-'}₩${fmt(Math.abs(pl))}</span></div>
         <div class="chip"><span class="clabel">기간수익률</span><span class="cval ${ret>=0?'up':'down'}">${ret===null?'-':fmtPct(ret)}</span></div>
       </div>
     `;
