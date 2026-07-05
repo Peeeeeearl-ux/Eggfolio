@@ -283,6 +283,14 @@
 
     <section class="tab-pane" data-pane="trade">
       <div class="card ticket">
+        <h3>AI로 빠르게 입력</h3>
+        <div class="row">
+          <input type="text" id="aiParseInput" placeholder="예: 오늘 삼성전자 10주 75000원에 샀어">
+        </div>
+        <button class="submit" id="aiParseBtn">AI로 채우기</button>
+      </div>
+
+      <div class="card ticket">
         <h3>매수 / 매도 기록</h3>
         <div class="row">
           <div class="radio-toggle" style="flex:1;">
@@ -340,6 +348,15 @@
           <button type="button" id="themeDarkBtn">다크</button>
           <button type="button" id="themeLightBtn">라이트</button>
         </div>
+      </div>
+
+      <div class="card ticket">
+        <h3>AI 자연어 입력 (Claude)</h3>
+        <div class="row">
+          <input type="text" id="claudeApiKey" placeholder="Anthropic API 키 (sk-ant-...)">
+        </div>
+        <button class="submit" id="claudeKeySaveBtn">저장</button>
+        <div id="claudeKeyStatus" style="font-size:11px;color:var(--text-secondary);margin-top:10px;">API 키 설정 안 됨</div>
       </div>
 
       <div class="card ticket">
@@ -495,6 +512,60 @@ function getSyncConfig(){
 }
 function saveSyncConfig(cfg){
   localStorage.setItem('portfolio-sync-config', JSON.stringify(cfg));
+}
+
+function getClaudeKey(){
+  return localStorage.getItem('portfolio-claude-key') || '';
+}
+function saveClaudeKey(key){
+  localStorage.setItem('portfolio-claude-key', key);
+}
+
+async function parseTransactionWithAI(text){
+  const apiKey = getClaudeKey();
+  if(!apiKey) throw new Error('NO_KEY');
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      tools: [{
+        name: 'extract_transaction',
+        description: '한국어 문장에서 주식 매수/매도 거래 정보를 추출한다',
+        input_schema: {
+          type: 'object',
+          properties: {
+            type: { type: 'string', enum: ['buy','sell'], description: '매수면 buy, 매도면 sell' },
+            name: { type: 'string', description: '종목명' },
+            account: { type: 'string', description: '계좌명. 언급 없으면 빈 문자열' },
+            shares: { type: 'number', description: '수량' },
+            price: { type: 'number', description: '1주당 단가' },
+            date: { type: 'string', description: '거래일 YYYY-MM-DD. 언급 없으면 오늘 날짜 사용' }
+          },
+          required: ['type','name','shares','price','date']
+        }
+      }],
+      tool_choice: { type: 'tool', name: 'extract_transaction' },
+      messages: [{
+        role: 'user',
+        content: `오늘 날짜: ${todayStr()}\n다음 문장에서 주식 거래 정보를 추출해줘: "${text}"`
+      }]
+    })
+  });
+  if(!res.ok){
+    const body = await res.json().catch(()=>({}));
+    throw new Error(body?.error?.message || `요청 실패 (${res.status})`);
+  }
+  const data = await res.json();
+  const toolBlock = (data.content||[]).find(b=>b.type==='tool_use');
+  if(!toolBlock) throw new Error('AI가 정보를 추출하지 못했어요');
+  return toolBlock.input;
 }
 function setSyncStatus(text){
   const el = document.getElementById('syncStatus');
@@ -863,6 +934,31 @@ document.getElementById('btnSell').addEventListener('click', ()=>{
   document.getElementById('btnBuy').classList.remove('active-buy');
 });
 
+document.getElementById('aiParseBtn').addEventListener('click', async ()=>{
+  const text = document.getElementById('aiParseInput').value.trim();
+  if(!text){ showToast('문장을 입력해주세요'); return; }
+  if(!getClaudeKey()){ showToast('설정 탭에서 Claude API 키를 먼저 등록해주세요'); return; }
+  const btn = document.getElementById('aiParseBtn');
+  const prevLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '분석 중...';
+  try{
+    const parsed = await parseTransactionWithAI(text);
+    (parsed.type === 'sell' ? document.getElementById('btnSell') : document.getElementById('btnBuy')).click();
+    document.getElementById('txName').value = parsed.name || '';
+    document.getElementById('txAccount').value = parsed.account || '';
+    document.getElementById('txShares').value = parsed.shares || '';
+    document.getElementById('txPrice').value = parsed.price || '';
+    document.getElementById('txDate').value = parsed.date || todayStr();
+    showToast('AI가 입력을 채웠어요. 확인 후 기록 추가를 눌러주세요');
+  }catch(e){
+    showToast(e.message === 'NO_KEY' ? 'API 키를 확인해주세요' : ('AI 분석 실패: ' + e.message));
+  }finally{
+    btn.disabled = false;
+    btn.textContent = prevLabel;
+  }
+});
+
 document.getElementById('txSubmit').addEventListener('click', ()=>{
   const name = document.getElementById('txName').value.trim();
   if(!name){ showToast('종목명을 입력해주세요'); return; }
@@ -1009,6 +1105,24 @@ document.getElementById('deleteModalConfirm').addEventListener('click', ()=>{
     setSyncStatus('동기화 설정됨 — 불러오는 중...');
   }
 })();
+
+(function initClaudeUI(){
+  const key = getClaudeKey();
+  const statusEl = document.getElementById('claudeKeyStatus');
+  if(key){
+    document.getElementById('claudeApiKey').value = key;
+    statusEl.textContent = 'API 키 설정됨';
+  } else {
+    statusEl.textContent = 'API 키 설정 안 됨';
+  }
+})();
+document.getElementById('claudeKeySaveBtn').addEventListener('click', ()=>{
+  const key = document.getElementById('claudeApiKey').value.trim();
+  if(!key){ showToast('API 키를 입력해주세요'); return; }
+  saveClaudeKey(key);
+  document.getElementById('claudeKeyStatus').textContent = 'API 키 설정됨';
+  showToast('API 키를 저장했어요');
+});
 
 document.getElementById('syncSaveBtn').addEventListener('click', async ()=>{
   const url = document.getElementById('syncUrl').value.trim().replace(/\/$/,'');
