@@ -735,6 +735,16 @@ function savePriceApiKey(key){
   localStorage.setItem('portfolio-price-api-key', key);
 }
 
+function chunkArray(arr, size){
+  const chunks = [];
+  for(let i=0;i<arr.length;i+=size) chunks.push(arr.slice(i,i+size));
+  return chunks;
+}
+function sleep(ms){ return new Promise(resolve=>setTimeout(resolve, ms)); }
+
+const PRICE_API_BATCH_SIZE = 8; // twelvedata 무료 플랜 분당 8크레딧 한도
+const PRICE_API_BATCH_DELAY_MS = 61000; // 분당 한도 리셋을 기다리기 위한 여유 대기 시간
+
 async function fetchMarketPrices(symbols, apiKey){
   const url = `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols.join(','))}&apikey=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url);
@@ -1795,7 +1805,13 @@ document.getElementById('refreshPricesBtn').addEventListener('click', async ()=>
     const needsFx = targets.some(h=>inferCurrency(h.priceSymbol)==='USD');
     const symbols = targets.map(h=>h.priceSymbol.trim());
     if(needsFx) symbols.push('USD/KRW');
-    const result = await fetchMarketPrices(symbols, apiKey);
+    const batches = chunkArray(symbols, PRICE_API_BATCH_SIZE);
+    const result = {};
+    for(let i=0; i<batches.length; i++){
+      btn.textContent = batches.length>1 ? `갱신 중... (${i+1}/${batches.length})` : '갱신 중...';
+      Object.assign(result, await fetchMarketPrices(batches[i], apiKey));
+      if(i < batches.length-1) await sleep(PRICE_API_BATCH_DELAY_MS);
+    }
     let updated = 0;
     const failed = [];
     targets.forEach(h=>{
