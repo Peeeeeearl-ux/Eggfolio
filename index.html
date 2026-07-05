@@ -216,6 +216,29 @@
   .modal-btn.cancel{background:var(--input-bg);color:var(--text-secondary);}
   .modal-btn.confirm{background:var(--accent);color:var(--accent-contrast);}
   .modal-btn.danger{background:var(--loss);color:#fff;}
+
+  .egg-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;}
+  .egg-head .goal-label{font-family:var(--sans);font-size:12.5px;color:var(--text-secondary);}
+  .egg-head .goal-pct{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--accent);}
+  .egg-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:16px 0;}
+  .egg{
+    aspect-ratio:0.82;border-radius:50% 50% 50% 50% / 58% 58% 42% 42%;
+    border:1.5px solid var(--border);background:transparent;padding:0;cursor:pointer;
+  }
+  .egg.filled{background:linear-gradient(160deg,#6EE0A0,var(--accent));border-color:var(--accent);}
+  .egg.latest{animation:eggPop .7s ease;}
+  @keyframes eggPop{0%{transform:scale(.8);opacity:.4;}55%{transform:scale(1.1);opacity:1;}100%{transform:scale(1);opacity:1;}}
+  @media (prefers-reduced-motion:reduce){.egg.latest{animation:none;}}
+  .egg-next{font-family:var(--sans);font-size:14px;color:var(--text);margin-top:4px;}
+  .egg-next b{font-family:var(--mono);color:var(--accent);}
+  .egg-foot{font-size:11px;color:var(--text-secondary);margin-top:10px;}
+  .goal-complete-badge{font-family:var(--sans);font-weight:700;font-size:14px;color:var(--accent);text-align:center;padding:10px 0;}
+  .goal-archive-item{
+    display:flex;justify-content:space-between;font-family:var(--mono);font-size:12.5px;
+    padding:8px 0;border-bottom:1px solid var(--border);color:var(--text);
+  }
+  .goal-archive-item:last-child{border-bottom:none;}
+  .goal-archive-item .gval{color:var(--text-secondary);font-family:var(--sans);}
 </style>
 </head>
 <body>
@@ -279,6 +302,10 @@
         <div class="holdings-list" id="holdingsBody"></div>
         <div class="empty" id="emptyMsg" style="display:none;">아직 등록된 종목이 없어요. 거래 탭에서 추가해보세요.</div>
       </div>
+    </section>
+
+    <section class="tab-pane" data-pane="goal">
+      <div id="goalContent"></div>
     </section>
 
     <section class="tab-pane" data-pane="trade">
@@ -388,6 +415,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg>
       <span>홈</span>
     </button>
+    <button class="nav-btn" data-tab="goal">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="13" rx="7" ry="9"/><path d="M5 13a7 9 0 0 0 14 0"/></svg>
+      <span>목표</span>
+    </button>
     <button class="nav-btn" data-tab="trade">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h14M18 7l-3-3M18 7l-3 3"/><path d="M20 17H6M6 17l3-3M6 17l3 3"/></svg>
       <span>거래</span>
@@ -426,9 +457,26 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="goalModalOverlay">
+  <div class="modal-card">
+    <h3 id="goalModalTitle">목표 금액 설정</h3>
+    <div class="modal-field"><label>목표 금액 (원)</label><input type="number" step="any" id="goalTargetInput" placeholder="예: 100000000"></div>
+    <div class="modal-actions">
+      <button class="modal-btn cancel" id="goalModalCancel">취소</button>
+      <button class="modal-btn confirm" id="goalModalSave">저장</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const PALETTE = ['#1DB954','#4CC9F0','#F72585','#FFB703','#9B5DE5','#00BBF9','#F15BB5','#43AA8B'];
-let state = { holdings: [], transactions: [] };
+const EGGS_PER_TRAY = 30;
+let state = { holdings: [], transactions: [], goals: { current: null, history: [] } };
+function normalizeState(){
+  state.holdings = state.holdings || [];
+  state.transactions = state.transactions || [];
+  state.goals = state.goals || { current: null, history: [] };
+}
 
 const fmt = n => Number(n).toLocaleString('ko-KR', {maximumFractionDigits:2});
 const fmtPct = n => (n>0?'+':'') + n.toFixed(2) + '%';
@@ -437,7 +485,7 @@ const cssVar = name => getComputedStyle(document.documentElement).getPropertyVal
 
 document.getElementById('txDate').value = todayStr();
 
-const TAB_TITLES = { home:'내 포트폴리오', trade:'거래', settings:'설정' };
+const TAB_TITLES = { home:'내 포트폴리오', goal:'목표', trade:'거래', settings:'설정' };
 function switchTab(tab){
   document.querySelectorAll('.tab-pane').forEach(p=>p.classList.toggle('active', p.dataset.pane===tab));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
@@ -469,20 +517,21 @@ document.getElementById('themeLightBtn').addEventListener('click', ()=>applyThem
   document.getElementById('themeLightBtn').classList.toggle('on', saved==='light');
 })();
 
-function snapshotOf(s){ return JSON.stringify({holdings:s.holdings||[], transactions:s.transactions||[]}); }
+function snapshotOf(s){ return JSON.stringify({holdings:s.holdings||[], transactions:s.transactions||[], goals:s.goals||null}); }
 let lastSnapshot = null;
 
 async function loadState(){
   try{
     if(window.storage){
       const res = await window.storage.get('portfolio-data');
-      if(res && res.value){ state = JSON.parse(res.value); lastSnapshot = snapshotOf(state); render(); return; }
+      if(res && res.value){ state = JSON.parse(res.value); normalizeState(); lastSnapshot = snapshotOf(state); render(); return; }
     }
   }catch(e){ }
   try{
     const raw = localStorage.getItem('portfolio-data');
     if(raw){ state = JSON.parse(raw); }
   }catch(e){ }
+  normalizeState();
   lastSnapshot = snapshotOf(state);
   render();
 }
@@ -618,6 +667,7 @@ async function syncNow(showMsg){
     const remoteTime = remote?.updated_at ? new Date(remote.updated_at).getTime() : 0;
     if(remote && remoteTime > localTime){
       state = remote.data;
+      normalizeState();
       lastSnapshot = snapshotOf(state);
       try{
         if(window.storage) await window.storage.set('portfolio-data', JSON.stringify(state));
@@ -636,10 +686,10 @@ async function syncNow(showMsg){
   }
 }
 
-function showToast(msg){
+function showToast(msg, duration){
   const t = document.getElementById('toast');
   t.textContent = msg; t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'), 1800);
+  setTimeout(()=>t.classList.remove('show'), duration || 1800);
 }
 
 function holdingId(account, ticker){ return account+'__'+ticker.toUpperCase(); }
@@ -754,8 +804,148 @@ function render(){
   renderTable(visible, totalValue, filter);
   renderTxLog();
   renderAccountDatalist();
+  renderGoal();
   saveState();
 }
+
+function totalAssetValue(){
+  return state.holdings.reduce((s,h)=>s+h.shares*h.currentPrice,0);
+}
+
+function renderGoal(){
+  normalizeState();
+  const container = document.getElementById('goalContent');
+  const goal = state.goals.current;
+  const totalValue = totalAssetValue();
+
+  if(!goal){
+    container.innerHTML = `
+      <div class="card">
+        <p class="card-title">목표 설정</p>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px;line-height:1.6;">목표 금액을 정하면 계란 한 판(30칸)이 시작돼요. 자산이 늘어날 때마다 계란이 하나씩 채워집니다.</p>
+        <button class="submit" id="goalSetupBtn">목표 설정하기</button>
+      </div>
+    `;
+    document.getElementById('goalSetupBtn').addEventListener('click', ()=>openGoalModal('', false));
+    return;
+  }
+
+  const perEgg = goal.targetAmount / EGGS_PER_TRAY;
+  const filled = Math.min(EGGS_PER_TRAY, Math.floor(totalValue / perEgg));
+  const prevFilled = goal.lastFilledCount || 0;
+  const justFilled = filled > prevFilled;
+  if(filled !== prevFilled){
+    if(justFilled){
+      goal.eggLog = goal.eggLog || [];
+      for(let i=prevFilled+1;i<=filled;i++){
+        goal.eggLog.push({ index:i, date: todayStr(), value: totalValue });
+      }
+    }
+    goal.lastFilledCount = filled;
+  }
+
+  const pct = Math.min(100, totalValue/goal.targetAmount*100);
+  const completed = filled >= EGGS_PER_TRAY;
+  const trayNo = state.goals.history.length + 1;
+
+  let eggsHtml = '';
+  for(let i=1;i<=EGGS_PER_TRAY;i++){
+    const cls = ['egg'];
+    if(i<=filled) cls.push('filled');
+    if(i===filled && justFilled) cls.push('latest');
+    eggsHtml += `<button type="button" class="${cls.join(' ')}" data-index="${i}" aria-label="${i}번째 계란"></button>`;
+  }
+
+  const remaining = Math.max(0, Math.ceil((filled+1)*perEgg - totalValue));
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="egg-head">
+        <span class="goal-label">목표 ₩${fmt(goal.targetAmount)} · ${trayNo}번째 판</span>
+        <span class="goal-pct">${pct.toFixed(0)}%</span>
+      </div>
+      <div class="egg-grid">${eggsHtml}</div>
+      ${completed
+        ? `<div class="goal-complete-badge">목표를 달성했어요!</div><button class="submit" id="goalNextBtn">다음 목표 설정하기</button>`
+        : `<div class="egg-next">다음 계란까지 <b>₩${fmt(remaining)}</b> 남았어요</div>`
+      }
+      <div class="egg-foot">현재 ₩${fmt(totalValue)} · ${filled}/${EGGS_PER_TRAY} 계란 완성</div>
+      <button class="pill-btn" id="goalEditBtn" style="margin-top:12px;">목표 금액 수정</button>
+    </div>
+    ${state.goals.history.length ? renderGoalArchive() : ''}
+  `;
+
+  container.querySelectorAll('.egg[data-index]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const idx = Number(btn.dataset.index);
+      const log = (goal.eggLog||[]).find(l=>l.index===idx);
+      if(log){
+        showToast(`${idx}번째 계란 · ${log.date} · ₩${fmt(log.value)}`, 3000);
+      } else if(idx<=filled){
+        showToast(`${idx}번째 계란 · 목표 설정 이전에 이미 채워져 있었어요`, 3000);
+      } else {
+        showToast('아직 채워지지 않은 계란이에요', 2000);
+      }
+    });
+  });
+
+  const editBtn = document.getElementById('goalEditBtn');
+  if(editBtn) editBtn.addEventListener('click', ()=>openGoalModal(goal.targetAmount, false));
+  const nextBtn = document.getElementById('goalNextBtn');
+  if(nextBtn) nextBtn.addEventListener('click', ()=>openGoalModal(goal.targetAmount*2, true));
+}
+
+function renderGoalArchive(){
+  return `
+    <div class="card">
+      <p class="card-title">완성한 목표</p>
+      ${state.goals.history.slice().reverse().map(g=>`
+        <div class="goal-archive-item">
+          <span>₩${fmt(g.targetAmount)}</span>
+          <span class="gval">${g.completedAt}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+let goalModalMode = 'set';
+function openGoalModal(prefill, isNext){
+  document.getElementById('goalModalTitle').textContent = isNext ? '다음 목표 설정' : (state.goals.current ? '목표 금액 수정' : '목표 금액 설정');
+  document.getElementById('goalTargetInput').value = prefill || '';
+  goalModalMode = isNext ? 'next' : (state.goals.current ? 'edit' : 'set');
+  document.getElementById('goalModalOverlay').classList.add('show');
+}
+function closeGoalModal(){
+  document.getElementById('goalModalOverlay').classList.remove('show');
+}
+document.getElementById('goalModalCancel').addEventListener('click', closeGoalModal);
+document.getElementById('goalModalOverlay').addEventListener('click', e=>{
+  if(e.target.id==='goalModalOverlay') closeGoalModal();
+});
+document.getElementById('goalModalSave').addEventListener('click', ()=>{
+  const amount = Number(document.getElementById('goalTargetInput').value);
+  if(!amount || amount<=0){ showToast('목표 금액을 확인해주세요'); return; }
+  if(goalModalMode === 'next'){
+    state.goals.history.push({
+      targetAmount: state.goals.current.targetAmount,
+      completedAt: todayStr(),
+      finalAmount: totalAssetValue()
+    });
+    state.goals.current = { targetAmount: amount, createdAt: todayStr(), lastFilledCount: 0, eggLog: [] };
+    showToast('축하해요! 새 목표를 시작했어요');
+  } else if(goalModalMode === 'edit'){
+    state.goals.current.targetAmount = amount;
+    showToast('목표 금액을 수정했어요');
+  } else {
+    const totalValue = totalAssetValue();
+    const initialFilled = Math.min(EGGS_PER_TRAY, Math.floor(totalValue/(amount/EGGS_PER_TRAY)));
+    state.goals.current = { targetAmount: amount, createdAt: todayStr(), lastFilledCount: initialFilled, eggLog: [] };
+    showToast('목표를 설정했어요');
+  }
+  closeGoalModal();
+  render();
+});
 
 function renderAccountFilter(){
   const sel = document.getElementById('accountFilter');
