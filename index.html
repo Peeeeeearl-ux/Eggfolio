@@ -307,6 +307,7 @@
         <div class="card-head">
           <p class="card-title" style="margin:0;">보유 종목</p>
           <div class="ledger-controls">
+            <button class="pill-btn" id="refreshPricesBtn">시세 갱신</button>
             <span class="select-wrap"><select class="pill" id="accountFilter"></select></span>
             <span class="select-wrap">
               <select class="pill" id="periodSelect">
@@ -381,6 +382,9 @@
           <input type="number" id="initPrice" placeholder="현재가" min="0" step="any">
           <input type="number" id="initDiv" placeholder="연간 배당금(선택)" min="0" step="any">
         </div>
+        <div class="row">
+          <input type="text" id="initSymbol" placeholder="시세 코드(선택, 예: AAPL, 005930:KRX)">
+        </div>
         <button class="submit" id="initSubmit">종목 등록</button>
       </div>
 
@@ -408,6 +412,16 @@
         </div>
         <button class="submit" id="claudeKeySaveBtn">저장</button>
         <div id="claudeKeyStatus" style="font-size:11px;color:var(--text-secondary);margin-top:10px;">API 키 설정 안 됨</div>
+      </div>
+
+      <div class="card ticket">
+        <h3>실시간 시세 (Twelve Data)</h3>
+        <div class="row">
+          <input type="text" id="priceApiKey" placeholder="Twelve Data API 키">
+        </div>
+        <button class="submit" id="priceKeySaveBtn">저장</button>
+        <div id="priceKeyStatus" style="font-size:11px;color:var(--text-secondary);margin-top:10px;">API 키 설정 안 됨</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:6px;">twelvedata.com에서 무료로 발급받을 수 있어요. 종목별 "시세 코드"를 입력해둬야 갱신 대상에 포함돼요.</div>
       </div>
 
       <div class="card ticket">
@@ -467,6 +481,7 @@
     <div class="modal-field"><label>수량</label><input type="number" step="any" id="editShares"></div>
     <div class="modal-field"><label>평단가</label><input type="number" step="any" id="editAvgCost"></div>
     <div class="modal-field"><label>현재가</label><input type="number" step="any" id="editCurrentPrice"></div>
+    <div class="modal-field"><label>시세 코드 (선택, 예: AAPL, 005930:KRX)</label><input type="text" id="editSymbol"></div>
     <div class="modal-actions">
       <button class="modal-btn cancel" id="editModalCancel">취소</button>
       <button class="modal-btn confirm" id="editModalSave">저장</button>
@@ -595,6 +610,23 @@ function getClaudeKey(){
 }
 function saveClaudeKey(key){
   localStorage.setItem('portfolio-claude-key', key);
+}
+
+function getPriceApiKey(){
+  return localStorage.getItem('portfolio-price-api-key') || '';
+}
+function savePriceApiKey(key){
+  localStorage.setItem('portfolio-price-api-key', key);
+}
+
+async function fetchMarketPrices(symbols, apiKey){
+  const url = `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols.join(','))}&apikey=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error(`요청 실패 (${res.status})`);
+  const data = await res.json();
+  if(data && data.status === 'error') throw new Error(data.message || '시세 조회 실패');
+  // 심볼이 1개면 응답이 {price:...} 형태로 오고, 여러 개면 심볼별로 키가 나뉘어 온다.
+  return symbols.length === 1 ? { [symbols[0]]: data } : data;
 }
 
 async function parseTransactionWithAI(text){
@@ -1269,6 +1301,7 @@ document.getElementById('initSubmit').addEventListener('click', ()=>{
   const avgCost = Number(document.getElementById('initAvgCost').value) || 0;
   const price = Number(document.getElementById('initPrice').value);
   const div = Number(document.getElementById('initDiv').value) || 0;
+  const symbol = document.getElementById('initSymbol').value.trim();
 
   if(!name){ showToast('종목명을 입력해주세요'); return; }
   if(!shares || shares<=0 || !price || price<=0){
@@ -1281,8 +1314,9 @@ document.getElementById('initSubmit').addEventListener('click', ()=>{
     h.currentPrice = price;
     h.divAnnual = div;
     h.name = name;
+    if(symbol) h.priceSymbol = symbol;
   } else {
-    h = {ticker: name.toUpperCase(), name, account, shares, avgCost, currentPrice:price, divAnnual:div, priceHistory:[]};
+    h = {ticker: name.toUpperCase(), name, account, shares, avgCost, currentPrice:price, divAnnual:div, priceSymbol:symbol, priceHistory:[]};
     state.holdings.push(h);
   }
   h.priceHistory.push({date: todayStr(), price});
@@ -1292,6 +1326,7 @@ document.getElementById('initSubmit').addEventListener('click', ()=>{
   document.getElementById('initAvgCost').value='';
   document.getElementById('initPrice').value='';
   document.getElementById('initDiv').value='';
+  document.getElementById('initSymbol').value='';
   showToast('보유 종목을 등록했어요');
   render();
 });
@@ -1326,6 +1361,7 @@ function openEditModal(h){
   document.getElementById('editShares').value = h.shares;
   document.getElementById('editAvgCost').value = h.avgCost;
   document.getElementById('editCurrentPrice').value = h.currentPrice;
+  document.getElementById('editSymbol').value = h.priceSymbol || '';
   document.getElementById('editModalOverlay').classList.add('show');
 }
 function closeEditModal(){
@@ -1343,6 +1379,7 @@ document.getElementById('editModalSave').addEventListener('click', ()=>{
   const shares = Number(document.getElementById('editShares').value);
   const avgCost = Number(document.getElementById('editAvgCost').value) || 0;
   const currentPrice = Number(document.getElementById('editCurrentPrice').value);
+  const symbol = document.getElementById('editSymbol').value.trim();
   if(!name){ showToast('종목명을 입력해주세요'); return; }
   if(!shares || shares<=0 || !currentPrice || currentPrice<=0){
     showToast('수량과 현재가는 0보다 커야 해요'); return;
@@ -1350,7 +1387,7 @@ document.getElementById('editModalSave').addEventListener('click', ()=>{
   if(currentPrice !== h.currentPrice){
     h.priceHistory.push({date: todayStr(), price: currentPrice});
   }
-  h.name = name; h.shares = shares; h.avgCost = avgCost; h.currentPrice = currentPrice;
+  h.name = name; h.shares = shares; h.avgCost = avgCost; h.currentPrice = currentPrice; h.priceSymbol = symbol;
   showToast('종목 정보를 수정했어요');
   closeEditModal();
   render();
@@ -1402,6 +1439,61 @@ document.getElementById('claudeKeySaveBtn').addEventListener('click', ()=>{
   saveClaudeKey(key);
   document.getElementById('claudeKeyStatus').textContent = 'API 키 설정됨';
   showToast('API 키를 저장했어요');
+});
+
+(function initPriceApiUI(){
+  const key = getPriceApiKey();
+  const statusEl = document.getElementById('priceKeyStatus');
+  if(key){
+    document.getElementById('priceApiKey').value = key;
+    statusEl.textContent = 'API 키 설정됨';
+  } else {
+    statusEl.textContent = 'API 키 설정 안 됨';
+  }
+})();
+document.getElementById('priceKeySaveBtn').addEventListener('click', ()=>{
+  const key = document.getElementById('priceApiKey').value.trim();
+  if(!key){ showToast('API 키를 입력해주세요'); return; }
+  savePriceApiKey(key);
+  document.getElementById('priceKeyStatus').textContent = 'API 키 설정됨';
+  showToast('API 키를 저장했어요');
+});
+
+document.getElementById('refreshPricesBtn').addEventListener('click', async ()=>{
+  const apiKey = getPriceApiKey();
+  if(!apiKey){ showToast('설정 탭에서 시세 API 키를 먼저 등록해주세요'); return; }
+  const targets = state.holdings.filter(h=>h.priceSymbol && h.priceSymbol.trim());
+  if(!targets.length){ showToast('시세 코드가 등록된 종목이 없어요'); return; }
+  const btn = document.getElementById('refreshPricesBtn');
+  const prevLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '갱신 중...';
+  try{
+    const symbols = targets.map(h=>h.priceSymbol.trim());
+    const result = await fetchMarketPrices(symbols, apiKey);
+    let updated = 0;
+    const failed = [];
+    targets.forEach(h=>{
+      const entry = result[h.priceSymbol.trim()];
+      const price = entry && Number(entry.price);
+      if(entry && !entry.code && price>0){
+        if(price !== h.currentPrice){
+          h.currentPrice = price;
+          h.priceHistory.push({date: todayStr(), price});
+        }
+        updated++;
+      } else {
+        failed.push(h.name);
+      }
+    });
+    render();
+    showToast(failed.length ? `${updated}개 갱신, 실패: ${failed.join(', ')}` : `${updated}개 종목 시세를 갱신했어요`, 3000);
+  }catch(e){
+    showToast('시세 갱신 실패: ' + e.message);
+  }finally{
+    btn.disabled = false;
+    btn.textContent = prevLabel;
+  }
 });
 
 document.getElementById('syncSaveBtn').addEventListener('click', async ()=>{
